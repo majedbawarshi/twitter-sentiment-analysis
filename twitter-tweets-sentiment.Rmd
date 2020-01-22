@@ -1,0 +1,300 @@
+---
+title: "twitter-tweets-sentiment"
+author: "omar and majed"
+date: "12/21/2019"
+output: html_document
+---
+```{r}
+library(tm)
+library(SentimentAnalysis)
+library(textreg)
+library(ggplot2)
+library(wordcloud)
+library(syuzhet)
+library(rtweet)
+```
+
+```{r}
+#Add your own twitter API info here
+app.name <- #twitter request name
+app.key <- #twitter key
+app.secret <- #twitter secret
+app.accessToken <- #twitter accessToken
+app.accessSecret <- #twitter accessSecret
+twitter_token <- create_token(
+  app = app.name,
+  consumer_key = app.key,
+  consumer_secret = app.secret,
+  access_token = app.accessToken,
+  access_secret = app.accessSecret)
+```
+
+```{r}
+data <- search_tweets(q= "#brexit ", n=90)
+View(data)
+```
+
+
+```{r}
+#change hiiiii buddy  to hi buddy
+data$text <- gsub('([[:alpha:]])\\1{2,}', '\\1', data$text)
+sms_corpus <- VCorpus(VectorSource(data$text))
+sms_corpus_clean <- tm_map(sms_corpus, content_transformer(tolower))
+sms_corpus_clean <- tm_map(sms_corpus_clean, removeNumbers)
+sms_corpus_clean <- tm_map(sms_corpus_clean, removePunctuation)
+sms_corpus_clean <- tm_map(sms_corpus_clean, removeWords, c("the","and",stopwords("english")))
+sms_corpus_clean <- tm_map(sms_corpus_clean, stripWhitespace)
+
+data <- convert.tm.to.character(sms_corpus_clean)
+
+View(data)
+```
+
+```{r}
+data <- na.omit(data)
+data.array <- as.matrix(data)
+```
+
+```{r}
+sentiment <- analyzeSentiment(data)
+words <- cbind(sentiment$WordCount, convertToBinaryResponse(sentiment)$SentimentGI)
+data.emotions <- get_nrc_sentiment(data)
+View(data.emotions)
+data.emotions
+```
+
+
+```{r}
+pos.counter <- 0
+for(i in 1:nrow(words)){
+  if(words[i,2] == 2 && !is.na(words[i,2])){
+    pos.counter <- pos.counter + words[i,1]
+  }
+}
+pos.frequency <- pos.counter
+
+neg.counter <- 0
+for(i in 1:nrow(words)){
+  if(words[i,2] == 1 && !is.na(words[i,2])){
+    neg.counter <- neg.counter + words[i,1]
+  }
+}
+neg.frequency <- neg.counter
+
+lengthOfWords = 0
+for(count in 1:nrow(words)){
+  lengthOfWords <- lengthOfWords + words[count,1]
+}
+if(lengthOfWords != 0) {
+  pos.rate <- pos.frequency / lengthOfWords * 100
+  neg.rate <- neg.frequency / lengthOfWords * 100
+}
+
+print(paste("positivity rate: " , pos.rate))
+print(paste("negativity rate: " , neg.rate))
+```
+```{r}
+wordcloud(
+  words=data, 
+  colors = brewer.pal(5, 'Dark2'),
+  scale=c(3, 0.4),
+  max.words = 50,
+  rot.per = 0.2,
+  min.freq = 5
+)
+
+hist(
+   words[,2],
+   col= rainbow(5),
+   xlim=c(1,2),
+   breaks = 2,
+   main="Histogram of pos and neg rate",
+   xlab="pos=1, neg=2",
+   las = 1
+)
+```
+
+```{r}
+k <- 10
+kmean <- kmeans(data.emotions, k, nstart=5)
+kmean.clusters <- as.factor(kmean$cluster)
+
+# number of data in each class
+kmean.centers <- kmean$centers
+
+
+summary(kmean.clusters)
+View(kmean.centers)
+```
+
+
+```{r}
+cuckoo.search <- function(n = k) {
+  # discovery rate of alien eggs/solutions
+  pa <- 0.25
+
+  ## Change this if you want to get better results
+  # Tolerance whcih is variance
+  tolerance <- 1.0e-5
+  
+  ## Simple bounds of the search domain
+  numberOfColumns <- ncol(kmean.centers)
+  lb <- matrix(-5, 1, numberOfColumns)
+  ub <- matrix(5, 1, numberOfColumns)
+
+  # Random initial solutions
+  nest <- kmean.centers
+  print(nest)
+
+  # Get the current best
+  fitness <- 10^10 * matrix(1, n, 1)
+  current <- cuckoos.best.nest(nest, nest, fitness)
+  
+  # fmin is minumum fitness value
+  fmin <- current$fmin
+  bestnest <- current$best
+  nest <- current$nest
+  fitness <- current$fitness
+
+  iter <- 0
+  # Start iterations
+  while (fmin > tolerance) {
+    # Generate new solutions (but keep the current best)
+    new_nest <- cuckoos.nest(nest, bestnest, lb, ub)
+    new_best <- cuckoos.best.nest(nest, new_nest, fitness)
+    fnew <- new_best$fmin
+    best <- new_best$best
+    nest <- new_best$nest
+    fitness <- new_best$fitness
+    # Update the counter
+    iter <- iter + n
+    # Discovery and randomization
+    new_nest <- empty.nests(nest, lb, ub, pa)
+    # Evaluate this set of solutions
+    new_best <- cuckoos.best.nest(nest, new_nest, fitness)
+    fnew <- new_best$fmin
+    best <- new_best$best
+    nest <- new_best$nest
+    fitness <- new_best$fitness
+    iter <- iter + n
+    # find the best objective so far
+    if (fnew<fmin) {
+      fmin <- fnew
+      bestnest <- best
+    }
+    print(paste('iter:',iter, 'fitness:', fmin))
+  }
+
+  # Post optimization and processing
+  print(paste('Total number of iterations=', iter))
+  return(list('fmin' = fmin, 'bestnest' = bestnest))
+}
+```
+
+
+```{r}
+# Get cuckoos by random walk
+cuckoos.nest <- function(nest, best, lb, ub) {
+  # Levy flights
+  n <- dim(nest)[1]
+
+  # Levy exponent and coefficient
+  # For details, see equation (2.21), Page 16 (chapter 2) of the book
+  # X. S. Yang, Nature-Inspired Metaheuristic Algorithms, 2nd Edition, Luniver Press, (2010).
+  beta <- 3/2
+  sigma <- (gamma(1+beta)*sin(pi*beta/2)/(gamma((1+beta)/2)*beta*2^((beta-1)/2)))^(1/beta)
+  for (i in 1:n) {
+    s <- nest[i,]
+    size <- dim(nest)[2]
+    # This is a simple way of implementing Levy flights
+    # For standard random walks, use step = 1
+    ## Levy flights by Mantegnas's algorithm
+    u <- rnorm(size)*sigma
+    v <- rnorm(size)
+    step <- u/abs(v)^(1/beta)
+    # In the next equation, the difference factor (s-best) means that
+    # When the solution is the best solution, it remains unchanged.
+    stepsize <- 0.01*step*(s-best)
+    # Here the factor 0.01 comes from the fact that L/100 should be typical
+    # step size of walks/flights where L is the typical lenghtscale;
+    # otherwise, Levy flights may become too aggresive/efficient.
+    # which makes new solutions (even) jump out side of the design domain
+    # (and thus wasting evaluations).
+    # Now the actual random walks or flights
+    s <- s+stepsize*rnorm(size)
+    # Apply simple bounds/limits
+    nest[i,] <- simple.bounds(s, lb, ub)
+  }
+
+  return(nest)
+}
+```
+
+
+```{r}
+cuckoos.best.nest <- function(nest, newnest, fitness) {
+  for (i in 1:dim(nest)[1]) {
+    fnew <- fobj(newnest[i,])
+    if (fnew <= fitness[i]) {
+      fitness[i] <- fnew
+      nest[i,] <- newnest[i,]
+    }
+  }
+
+  # Find the current best
+  fmin <- min(fitness)
+  best <- nest[which.min(fitness)]
+  return(list('fmin' = fmin, 'best' = best, 'nest' = nest, 'fitness' = fitness))
+}
+```
+
+
+```{r}
+## Replace some nests by constructing new solutions/nests
+empty.nests <- function(nest, lb, ub, pa) {
+  # A fraction of worse nests are discovered with a probability pa
+  n <- dim(nest)[1]
+  o <- dim(nest)[2]
+  # Discovery or not -- a status vector
+  k <- matrix(runif(n*o), n, o)>pa
+  # In the real world,  if a cuckoo's egg is very similar to host's eggs, then
+  # this cuckoo's egg is less likely to be discovered, thus the fitness should
+  # be related to the difference in solutions. Therefore, it is a good idea
+  # to do a random walk in a biased way with some random step sizes.
+  ## New solution by biased/selective random walks
+  stepsize <- runif(1)*(nest[sample.int(n),]-nest[sample.int(n),])
+  return(nest*stepsize*k)
+}
+```
+
+
+```{r}
+# Application of simple constraints
+simple.bounds <- function(s, lb, ub) {
+  # Apply the lower bound
+  ns_tmp <- s
+  i <- ns_tmp<lb
+  ns_tmp[i] <- lb[i]
+  # Apply the upper bounds
+  j <- ns_tmp>ub
+  ns_tmp[j] = ub[j]
+  # Update this new move
+  return(ns_tmp)
+}
+```
+
+
+```{r}
+# You can replace the following by your own functions
+# A d-dimensional objective functions
+fobj <- function(u) {
+  ## d-dimensional sphere function sum_j=1^d (u_j-1)^2.
+  # with a minimum at (1,1, ...., 1);
+  return(sum((u-1)^2));
+}
+```
+
+```{r}
+cuckoo.search()
+```
+
